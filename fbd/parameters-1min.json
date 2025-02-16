@@ -1,0 +1,21 @@
+{
+    "ticker": {
+        "significantLowMarker": "15",
+        "lower": "2",
+        "upper": "11"
+        },
+
+    "buy": {
+        "units": "200",
+        "stopLoss":
+            {
+                "initial": "13",
+                "secondary": "-1"
+            }
+    },
+
+    "sell": {
+        "profitPerUnit": "10",
+        "percentageToSell": "100"
+    }
+}

@@ -1,0 +1,236 @@
+import json
+import pandas as pd
+import os
+from ticker import Ticker, Buy, Sell
+from datetime import datetime, timedelta
+
+def initiate(fileName):
+    
+    
+    #region variables
+    row_Ticker = None
+    columns = ['Alert','Row Index','Timestamp','High Price','Low Price','Lowest Price','Significant Low Price','Units Bought','Entry Point','Stop Loss','Units Sold','Units Left']
+    finalDataFrame = pd.DataFrame(columns=columns)
+    #endregion
+    
+    #region Create the Ticker object
+    try:
+        row_Ticker = Ticker('parameters-1min.json')
+    except Exception as e:
+        printError()
+        return
+    #endregion
+   
+    #region Load data into Dataframe
+    dataFrame = loadFile(fileName)
+    
+    if dataFrame is None:
+        printError()
+        return
+    #endregion Load data into Dataframe
+    
+    #region get a data frame for the previous 2 hours only; Assume a start time of 10 am    
+    comparison_date = datetime(2024, 1, 1, 20, 0) # year, month, day, hour, minute, second
+    before_time = getTrimmedDataFrame(dataFrame,comparison_date)
+    filtered_indices = before_time.index
+    after_time = dataFrame.drop(filtered_indices)
+    #print(after_time)
+    if before_time is None:
+        printError()
+        return
+    #endregion
+    
+    #region for now, I have to do this for purpose of triggering a run
+    newlowestPrice = findLowestPriceInPast(before_time, None)    
+    if newlowestPrice is None:
+        printError()
+        return
+    else:
+        row_Ticker.lowestPrice= newlowestPrice
+        row_Ticker.comments = 'Starting Lowest Price in previous 2 hours'
+        finalDataFrame.loc[len(finalDataFrame)]= row_Ticker.addRecord()        
+    #endregion
+    
+    #region Loop through the AFTER_TIME data frame and check only for low prices
+    starting_Timestamp = after_time.iloc[0,0]
+    
+    for idx, row in after_time.iterrows():
+        
+        tmpTimeStamp = row.iloc[0]  # The current timestamp      
+        tmpCurrentHighPrice = float(row.iloc[1]) # The High Price
+        tmpCurrentLowPrice = float(row.iloc[2]) # The Low Price
+        idxExcel = idx + 1
+        
+        row_Ticker.currentHighPrice = tmpCurrentHighPrice
+        row_Ticker.currentLowPrice = tmpCurrentLowPrice
+        row_Ticker.idExcel = idxExcel
+        row_Ticker.timeStamp = tmpTimeStamp
+        
+        twoHoursElapsed = twoHoursOver(starting_Timestamp, tmpTimeStamp)
+        
+        #region the 2 hour window is NOT over yet
+        if twoHoursElapsed == False:  
+            if row_Ticker.SignificantLow.Known is None or row_Ticker.SignificantLow.Known == False: # Sig Low Not Known
+                if tmpCurrentLowPrice <= row_Ticker.lowestPrice:
+                    row_Ticker.lowestPrice = tmpCurrentLowPrice
+                    row_Ticker.comments = '[ALERT] New Lowest Price Found/Existing Lowest Price Confirmed. Looking for Sig Low'   
+                    finalDataFrame.loc[len(finalDataFrame)]= row_Ticker.addRecord() 
+                    continue
+                
+                # Sig Low possibly?
+                if (tmpCurrentLowPrice > row_Ticker.lowestPrice) and \
+                    (tmpCurrentLowPrice - row_Ticker.lowestPrice >= row_Ticker.SignificantLow.Marker):
+                    row_Ticker.comments = '[ALERT] Significant Low Found'
+                    row_Ticker.SignificantLow.Known = True
+                    row_Ticker.SignificantLow.Price = row_Ticker.lowestPrice
+                    finalDataFrame.loc[len(finalDataFrame)]= row_Ticker.addRecord()
+                    continue
+            
+            if row_Ticker.SignificantLow.Known:
+                if (tmpCurrentLowPrice < row_Ticker.SignificantLow.Price and \
+                    row_Ticker.SignificantLow.lowPoint <= row_Ticker.SignificantLow.Price-tmpCurrentLowPrice < row_Ticker.SignificantLow.highPoint):
+                    row_Ticker.comments = '[ALERT] Downwards Breach'
+                    row_Ticker.SignificantLow.downwardsBreach = True
+                    finalDataFrame.loc[len(finalDataFrame)]= row_Ticker.addRecord()
+                    continue
+                
+                if (tmpCurrentLowPrice < row_Ticker.SignificantLow.Price and \
+                    row_Ticker.SignificantLow.Price - tmpCurrentLowPrice > row_Ticker.SignificantLow.highPoint):
+                    row_Ticker.comments = '[ALERT] Significant Low has Flushed'
+                    row_Ticker.SignificantLow.Known = False
+                    finalDataFrame.loc[len(finalDataFrame)]= row_Ticker.addRecord()
+                    continue
+                
+                if (tmpCurrentLowPrice - row_Ticker.SignificantLow.Price >= row_Ticker.SignificantLow.lowPoint and \
+                    row_Ticker.SignificantLow.downwardsBreach==True and \
+                    row_Ticker.hasBought is None or row_Ticker.hasBought == False):
+                    row_Ticker.comments = '[ALERT] Buy'
+                    row_Ticker.SignificantLow.Known = False
+                    row_Ticker.Buy.entryPoint = row_Ticker.currentLowPrice
+                    tmpStopLossPrice = float(row_Ticker.setStopLoss('initial'))
+                    row_Ticker.Buy.stopLossPrice = float(row_Ticker.Buy.entryPoint) - float(tmpStopLossPrice)
+                    row_Ticker.hasBought = True
+                    finalDataFrame.loc[len(finalDataFrame)]= row_Ticker.addRecord()
+                    continue
+                
+        #endregion the 2 hour window is NOT over yet
+        
+        #region 2 hour window is over
+        if twoHoursElapsed == True:
+            # Set LowestPrice to currentLowPrice
+            row_Ticker.lowestPrice = row_Ticker.currentLowPrice
+            # Set start time to THIS CURRENT TIME STAMP
+            starting_Timestamp = tmpTimeStamp
+            row_Ticker.SignificantLow.Known = False
+            finalDataFrame.loc[len(finalDataFrame)]= row_Ticker.addRecord()
+            continue
+        #endregion
+        
+    
+    #endregion
+    
+    
+    #saveFinalDataFrame(finalDataFrame)
+
+
+#region twoHoursOver(time 1, time 2)
+def twoHoursOver(startTime, endTime):
+    
+    twoHoursOver = False
+    diff = endTime - startTime
+    hours_diff = diff.total_seconds() / 3600
+    
+    #print(hours_diff)
+    
+    if hours_diff > 2:
+        twoHoursOver = True
+        
+    return twoHoursOver
+
+#endregion
+        
+#region save final data frame
+def saveFinalDataFrame(finalDataFrame):
+    try:
+    # Try to remove the file if it exists
+        os.remove('test.csv')
+        print('test.csv was deleted')
+    except FileNotFoundError:
+        # File doesn't exist, which is fine
+        print('test.csv did not exist')
+
+    # Create new file
+    with open('test.csv', 'w') as f:
+        finalDataFrame.to_csv('test.csv')
+    print('Created test.csv') 
+#endregion   
+
+#region findLowestPriceInPast
+def findLowestPriceInPast(before_time, prevLowestPrice):
+
+    price = None
+    tmpPrevLowestPrice = prevLowestPrice
+    
+    try:
+        for idx,row in before_time.iterrows():
+            
+            tmpLowPrice = float(row.iloc[2])
+            
+            if tmpPrevLowestPrice is None:
+                price = tmpLowPrice
+                tmpPrevLowestPrice = price
+            else:
+                if tmpLowPrice < price:
+                    price = tmpLowPrice
+                    
+    except Exception as e:
+        print('Error finding lowest price. Reason : ',e)
+    
+    return price
+
+#endregion
+
+#region printError
+def printError():
+    print('Terminating due to error mentioned above') 
+#endregion
+
+#region getTrimmedDataFrame
+
+def getTrimmedDataFrame(dataFrame,comparison_date):
+    
+    before_time = None
+    
+    try:
+    
+        dataFrame.iloc[:, 0] = pd.to_datetime(dataFrame.iloc[:, 0])
+        before_time = dataFrame[dataFrame.iloc[:, 0] < comparison_date]
+    
+    except Exception as e:
+        print ('Error trimming data set. Reason: ', e)
+    
+    return before_time
+
+#endregion getTrimmedDataFrame
+
+#region loadFile
+
+def loadFile(fileName):
+    
+    dataFrame = None
+    
+    try:
+        dataFrame = pd.read_csv(fileName,usecols=[0,2,3], header=None) # 0 = timestamp, 2 = High Price, 3 = Low Price
+    
+    except Exception as e:
+        print('Error trying to load file. Reason: ', e) 
+    
+    return dataFrame
+
+#endregion loadFile
+
+if __name__ == "__main__":
+    
+    fileName='2024-01.csv'
+    #fileName = 'dummydata.csv'
+    initiate(fileName)
