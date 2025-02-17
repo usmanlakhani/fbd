@@ -4,19 +4,15 @@ import os
 from ticker import Ticker, Buy, Sell
 from datetime import datetime, timedelta
 
-global finalDataFrame
+finalDataFrame = None
 
 def initiate(fileName):
 
     #region variables
     row_Ticker = None
     columns = ['Alert','Row Index','Timestamp','High Price','Low Price','Lowest Price','Significant Low Price','Units Bought','Entry Point','Stop Loss','Units Sold','Units Left']
+    global finalDataFrame
     finalDataFrame = pd.DataFrame(columns=columns)
-    intYear = 2024
-    intMonth = 1
-    intDay = 1
-    intHour=20
-    intMin=0
     #endregion
     
 
@@ -26,56 +22,64 @@ def initiate(fileName):
         printError()
         return
 
-   
-    
     dataFrame = loadFile(fileName)
     
     if dataFrame is None:
         printError()
         return
-
     
-    #datetime(2024, 1, 1, 20, 0) # year, month, day, hour, minute, second
-    # 1. Passing date dimensions along with raw data frame --> Get a data frame that has only 2 hours in the past rows
-    trimmedDataFrame = trimDataFrame(dataFrame, intYear,intMonth,intDay,intHour,intMin)
+    # Loop through RAW data frame, split it in such a way that each sub-data frame has a 2 hour span
+    subDataFrames = createSubDataFrames(dataFrame,120)
     
-    if trimmedDataFrame is None:
-        printError()
-        return
-
-    # 2. Using the trimmed data frame that has only last 2 hours records, find the lowest price
-    row_Ticker.lowestPrice = findLowestPriceInPast(trimmedDataFrame, None)
-    
-    if row_Ticker.lowestPrice is None:
-        printError()
-        return    
-
-    # 3. Remove the records that were extracted ONLY for finding lowest price
-    filtered_indices = trimmedDataFrame.index
-    
-    # 4. Pass the [raw - 2 hours] data frame to extract method --> 2 is being sent to keep data records within 2 hours only
-    toProcessDataFrame = extractToProcessDataFrame(dataFrame.drop(filtered_indices),2)
-    process(toProcessDataFrame,row_Ticker)
-
-    
-
-def extractToProcessDataFrame(raw,lookForwardPeriod):
-    
-    dfReturn = None
-    
-    try:
-        dt = raw.iloc[0,0]
+    i = 0
+    while i < len(subDataFrames):
         
-        dt_plus_lookForwardPeriod = dt + timedelta(hours=2)  # Adds 5 hours
+        if i == 0: 
+            i = i + 1
+            continue
         
-        dfReturn = raw[(raw.iloc[:,0] >= dt) & (raw.iloc[:,0] < dt_plus_lookForwardPeriod)]
-    
-    except Exception as e:
-        print('Error finding lowest price. Reason : ',e)    
-    
-    return dfReturn
-    
+        tmpLowestPrice = findLowestPriceInPast(subDataFrames[i-1],None)
+        row_Ticker.lowestPrice = tmpLowestPrice
+        row_Ticker.comments = '[ALERT] 2-Hr Window Expired. Reset Low/Sig Low Prices'
+        row_Ticker.currentHighPrice = None
+        row_Ticker.currentLowPrice = None
+        row_Ticker.timeStamp = None
+        # use lowest price found and use it with the data frame at index i
+        finalDataFrame.loc[len(finalDataFrame)]= row_Ticker.addRecord()
+        row_Ticker = process(subDataFrames[i], row_Ticker) 
+        i = i + 1
+        
+    saveFinalDataFrame(finalDataFrame)
 
+def createSubDataFrames(raw, periodToSplitOverInMinutes):
+    
+    _row = 0
+    column = 0
+    listDataFrames = []
+    print(raw.index.max())
+    
+    # Convert the column to datetime if it isn't already
+    if not pd.api.types.is_datetime64_any_dtype(raw.iloc[:, 0]):
+        raw.iloc[:, 0] = pd.to_datetime(raw.iloc[:, 0])
+    
+    for idx, row in raw.iterrows():
+        
+        if (_row < raw.index.max()):
+        
+            dtStartingTimeStamp = raw.iloc[_row,column]
+        
+            dtEndingTimeStamp = dtStartingTimeStamp + timedelta(minutes=periodToSplitOverInMinutes)
+        
+            # Filter the DataFrame
+            dfReturn = raw[(raw.iloc[:, 0] >= dtStartingTimeStamp) & (raw.iloc[:, 0] < dtEndingTimeStamp)]
+        
+            listDataFrames.append(dfReturn)
+        
+            _row = _row + len(dfReturn)
+    
+    return listDataFrames
+
+ 
 def process(dataFrame,row_Ticker):
     
     for idx, row in dataFrame.iterrows():
@@ -90,12 +94,26 @@ def process(dataFrame,row_Ticker):
         row_Ticker.idExcel = idxExcel
         row_Ticker.timeStamp = tmpTimeStamp
         
+        if row_Ticker.hasBought == True and tmpCurrentHighPrice - row_Ticker.Buy.entryPoint >= row_Ticker.Sell.profitPerUnit:
+            row_Ticker.comments = '[ALERT] Sell'
+            row_Ticker.hasBought = False
+            row_Ticker.Buy.entryPoint = None
+            finalDataFrame.loc[len(finalDataFrame)]= row_Ticker.addRecord()
+            continue
+        
         if row_Ticker.SignificantLow.Known == False or row_Ticker.SignificantLow.Known is None:
             
-            if tmpCurrentLowPrice <= row_Ticker.lowestPrice:
+            if tmpCurrentLowPrice < row_Ticker.lowestPrice:
                 
                 row_Ticker.lowestPrice = tmpCurrentLowPrice
-                row_Ticker.comments = '[ALERT] Low Price Found/Confirmed'
+                row_Ticker.comments = '[ALERT] Low Price Found'
+                finalDataFrame.loc[len(finalDataFrame)]= row_Ticker.addRecord() 
+                continue
+            
+            if tmpCurrentLowPrice == row_Ticker.lowestPrice:
+                
+                row_Ticker.lowestPrice = tmpCurrentLowPrice
+                row_Ticker.comments = '[SOFT ALERT] Existing Low Price Verified'
                 finalDataFrame.loc[len(finalDataFrame)]= row_Ticker.addRecord() 
                 continue
             
@@ -105,16 +123,51 @@ def process(dataFrame,row_Ticker):
                 row_Ticker.SignificantLow.Known = True
                 row_Ticker.SignificantLow.Price = row_Ticker.lowestPrice
                 finalDataFrame.loc[len(finalDataFrame)]= row_Ticker.addRecord()
-                continue  
+                continue 
+            
+            else:
+                row_Ticker.comments = 'Looking for Sig Low'
+                finalDataFrame.loc[len(finalDataFrame)]= row_Ticker.addRecord()
+                continue
 
         if row_Ticker.SignificantLow.Known == True:
             
-            if tmpCurrentLowPrice < row_Ticker.SignificantLow.Price and tmpCurrentLowPrice - row_Ticker.SignificantLow.Price 
-                        
+            # downward breach
+            if tmpCurrentLowPrice < row_Ticker.SignificantLow.Price and \
+                row_Ticker.SignificantLow.lowPoint <=  row_Ticker.SignificantLow.Price - tmpCurrentLowPrice < row_Ticker.SignificantLow.highPoint:
+                    
+                    row_Ticker.comments = '[ALERT] Significant Low has been Downwards Breached' 
+                    row_Ticker.SignificantLow.downwardsBreach = True
+                    finalDataFrame.loc[len(finalDataFrame)] = row_Ticker.addRecord()
+                    continue
+            
+            # flush
+            if tmpCurrentLowPrice < row_Ticker.SignificantLow.Price and \
+                row_Ticker.SignificantLow.Price - tmpCurrentLowPrice >= row_Ticker.SignificantLow.highPoint:
+                    
+                    row_Ticker.comments = '[ALERT] Significant Low has been flushed'   
+                    row_Ticker.SignificantLow.Known = False 
+                    row_Ticker.lowestPrice = tmpCurrentLowPrice
+                    finalDataFrame.loc[len(finalDataFrame)] = row_Ticker.addRecord()
+                    continue
+            
+            # buy
+            if tmpCurrentLowPrice > row_Ticker.SignificantLow.Price and \
+                row_Ticker.SignificantLow.downwardsBreach and \
+                tmpCurrentLowPrice - row_Ticker.SignificantLow.Price >= row_Ticker.SignificantLow.lowPoint:
+                    
+                    if row_Ticker.hasBought == False or row_Ticker.hasBought is None:
+                        row_Ticker.comments = '[ALERT] Buy'
+                        row_Ticker.SignificantLow.Known = False
+                        row_Ticker.SignificantLow.Price = None
+                        #row_Ticker.lowestPrice = None
+                        row_Ticker.hasBought = True
+                        row_Ticker.Buy.entryPoint = tmpCurrentLowPrice
+                        finalDataFrame.loc[len(finalDataFrame)] = row_Ticker.addRecord()
+                        continue
 
-
-
-
+    return row_Ticker
+                      
 def findLowestPriceInPast(before_time, prevLowestPrice):
 
     price = None
@@ -136,20 +189,6 @@ def findLowestPriceInPast(before_time, prevLowestPrice):
         print('Error finding lowest price. Reason : ',e)
     
     return price
-
-def trimDataFrame(raw, intYear,intMonth,intDay,intHour,intMin):
-
-    trimmedDataFrame = None
-    
-    try:
-        comparison_date = datetime(intYear,intMonth,intDay,intHour,intMin)
-        raw.iloc[:, 0] = pd.to_datetime(raw.iloc[:, 0])
-        trimmedDataFrame = raw[raw.iloc[:, 0] < comparison_date]
-    
-    except Exception as e:
-        print ('Error trimming data set. Reason: ', e)
-    #print(trimmedDataFrame)
-    return trimmedDataFrame      
 
 def saveFinalDataFrame(finalDataFrame):
     try:
@@ -204,6 +243,8 @@ def loadFile(fileName):
 
 if __name__ == "__main__":
     
-    fileName='2024-01.csv'
+    #fileName='2024-01.csv'
+    #fileName = 'Jan1-Jan2-Jan3-Jan4.csv'
+    fileName= 'Jan1-10.csv'
     #fileName = 'dummydata.csv'
     initiate(fileName)

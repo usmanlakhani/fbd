@@ -68,19 +68,7 @@ class Ticker:
     def addRecord(self):
         #columns = ['Alert','Row Index','Timestamp','High Price','Low Price','Lowest Price','Significant Low Price','Units Bought','Entry Point','Stop Loss','Units Sold','Units Left']
         #tempList = []
-            
-        ##tempList.append(self.comments if self.comments != None else '')
-        #tempList.append(self.idExcel if self.idExcel != None else '')
-        #tempList.append(self.timeStamp if self.timeStamp != None else '')
-        #tempList.append(self.currentHighPrice if self.currentHighPrice != None else '')
-        #tempList.append(self.currentLowPrice if self.currentLowPrice != None else '')
-        #tempList.append(self.lowestPrice if self.lowestPrice != None else '')
-        #tempList.append(self.SignificantLow.Price if self.SignificantLow.Known else '')
-        #tempList.append(self.Buy.units if self.hasBought else '')
-        #tempList.append(self.Buy.entryPoint if self.hasBought else '')
-        #tempList.append(self.Buy.stopLossPrice if self.hasBought else '')
-        #tempList.append(self.Sell.unitsSold if self.Sell.sellSequence != None else '')
-        #tempList.append(self.Buy.units - float(self.Sell.unitsSold) if self.Sell.sellSequence != None else '')
+        
         
         new_row = {'Alert': self.comments if self.comments != None else 'No Alert',
                    'Row Index': self.idExcel if self.idExcel!= None else '',
